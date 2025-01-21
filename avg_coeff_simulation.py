@@ -7,12 +7,12 @@ from SelfFunctions import print_unsteady_results
 
 # Function to run the unsteady aerodynamic model with conceptual design models and (va, aoa, and flapping period) as the input parameters
 def simulation(mw_airfoil = "naca8304", fp = 0.2, va = 5, aoa = 5, mw_wingspan = 1.4, aspect_ratio = 4.66, taper_ratio = 0.6):
-    mw_root_chord = (mw_wingspan/ aspect_ratio)/2
+    mw_root_chord = (mw_wingspan / aspect_ratio)
     mw_tip_chord = taper_ratio * mw_root_chord
 
     # Rounding off to 2 decimal points
-    mw_root_chord = round(mw_root_chord, 2)
-    mw_tip_chord = round(mw_tip_chord, 2)
+    mw_root_chord = round(mw_root_chord, 3)
+    mw_tip_chord = round(mw_tip_chord, 3)
     
     example_airplane=ps.geometry.Airplane(
         name="naca8304",
@@ -40,7 +40,7 @@ def simulation(mw_airfoil = "naca8304", fp = 0.2, va = 5, aoa = 5, mw_wingspan =
                         control_surface_type="symmetric",
                         control_surface_hinge_point=0.0,
                         control_surface_deflection=0.0,
-                        num_spanwise_panels=8,
+                        num_spanwise_panels=6,
                         spanwise_spacing="cosine",
                         chord=mw_root_chord,
                         airfoil=ps.geometry.Airfoil(
@@ -103,6 +103,7 @@ def simulation(mw_airfoil = "naca8304", fp = 0.2, va = 5, aoa = 5, mw_wingspan =
         base_airplane=example_airplane,
         wing_movements=[main_wing_movement],
     )
+
     del main_wing_movement
 
     example_operating_point=ps.operating_point.OperatingPoint(
@@ -132,6 +133,7 @@ def simulation(mw_airfoil = "naca8304", fp = 0.2, va = 5, aoa = 5, mw_wingspan =
         num_steps=None,
         delta_time=None,
     )
+
     del airplane_movement
     del operating_point_movement
 
@@ -152,21 +154,21 @@ def simulation(mw_airfoil = "naca8304", fp = 0.2, va = 5, aoa = 5, mw_wingspan =
         prescribed_wake=True,
     )
 
-    ps.output.animate(
-    # Set the unsteady solver to the one we just ran.
-    unsteady_solver=example_solver,
-    # Tell the animate function to color the aircraft's wing panels with the local
-    # lift coefficient. The valid arguments for this parameter are None, "induced drag",
-    # "side force", or "lift".
-    scalar_type="lift",
-    # Tell the animate function to show the wake vortices. This value defaults to
-    # False.
-    show_wake_vortices=True,
-    # Tell the animate function to not save the animation as file. This way,
-    # the animation will still be displayed but not saved. This value defaults to
-    # False.
-    save=False,
-    )
+    # ps.output.animate(
+    # # Set the unsteady solver to the one we just ran.
+    # unsteady_solver=example_solver,
+    # # Tell the animate function to color the aircraft's wing panels with the local
+    # # lift coefficient. The valid arguments for this parameter are None, "induced drag",
+    # # "side force", or "lift".
+    # scalar_type="lift",
+    # # Tell the animate function to show the wake vortices. This value defaults to
+    # # False.
+    # show_wake_vortices=True,
+    # # Tell the animate function to not save the animation as file. This way,
+    # # the animation will still be displayed but not saved. This value defaults to
+    # # False.
+    # save=False,
+    # )
     lift, induced_drag = print_unsteady_results(example_solver)  
 
     return lift, induced_drag
@@ -175,7 +177,6 @@ def simulation(mw_airfoil = "naca8304", fp = 0.2, va = 5, aoa = 5, mw_wingspan =
 
 # print(simulation(mw_airfoil = "naca8304", fp = 0.8, va = 5, aoa = 35, mw_wingspan = 0.8, aspect_ratio =3.5, taper_ratio = 0.4))
 
-print(simulation(mw_airfoil = "naca8304", fp = 0.2, va = 5, aoa = 35, mw_wingspan = 0.8, aspect_ratio =3.5, taper_ratio = 0.8))
 
 
 
