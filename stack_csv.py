@@ -21,4 +21,4 @@ def stack_csv_vertically(directory, output_file):
     
     print(f"Stacked CSV saved to {output_file}")
 
-stack_csv_vertically("Des_Data", "Design_Data.csv")
+stack_csv_vertically("Data", "Design_Data.csv")
