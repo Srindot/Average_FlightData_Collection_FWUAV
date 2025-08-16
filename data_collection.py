@@ -1,115 +1,229 @@
+#!/usr/bin/env python3
+"""
+Safe parallel sweep with LHS sampling and immediate CSV write per process.
+"""
+from __future__ import annotations
+
 import os
 import csv
 import logging
-from concurrent.futures import ProcessPoolExecutor
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Sequence, Tuple, Optional
+
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.stats import qmc
 
-# --- Sweep Configuration ---
+from avg_coeff_simulation import simulation  # Your simulation function
+
+# --- Constants ---
+
+DEFAULT_OUTPUT = "Data/AverageFlightData10.csv"
+DEFAULT_ERROR_CSV = "Data/AverageFlightData10_errors.csv"
+DEFAULT_LOG = "logs/mark4_sweep.log"
+
+CSV_COLUMNS = [
+    "airfoil", "wingspan", "aspect_ratio", "taper_ratio",
+    "flapping_period", "air_speed", "angle_of_attack",
+    "lift", "induced_drag", "status", "error"
+]
+
+ARG_ORDER = [
+    "airfoil", "wingspan", "aspect_ratio", "taper_ratio",
+    "flapping_period", "air_speed", "angle_of_attack"
+]
+
+# --- Config Dataclass ---
+
+@dataclass(frozen=True)
 class SweepConfig:
-    def __init__(self, param_grid, n_samples=10, max_workers=2, chunk_size=5, out_file="sweep_results.csv"):
-        self.param_grid = param_grid
-        self.n_samples = n_samples
-        self.max_workers = max_workers
-        self.chunk_size = chunk_size
-        self.out_file = out_file
+    param_grid: Dict[str, Sequence[Any]]
+    n_samples: int = 20
+    output_csv: str = DEFAULT_OUTPUT
+    error_csv: str = DEFAULT_ERROR_CSV
+    log_path: str = DEFAULT_LOG
+    max_workers: Optional[int] = 2
+    in_flight_factor: int = 2
 
-# --- Latin Hypercube Sampling ---
-def lhs_samples(param_grid, n_samples):
-    continuous_params = {k: v for k, v in param_grid.items() if isinstance(v, tuple)}
-    categorical_params = {k: v for k, v in param_grid.items() if isinstance(v, list)}
+# --- Utilities ---
 
-    if continuous_params:
-        sampler = qmc.LatinHypercube(d=len(continuous_params))
-        sample = sampler.random(n=n_samples)
-        lhs_scaled = qmc.scale(
-            sample,
-            [v[0] for v in continuous_params.values()],
-            [v[1] for v in continuous_params.values()]
-        )
+def setup_logging(log_path: str) -> None:
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    logging.basicConfig(
+        filename=log_path,
+        filemode="a",
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s"
+    )
+    console = logging.StreamHandler()
+    console.setLevel(logging.INFO)
+    console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logging.getLogger().addHandler(console)
+
+def ensure_parent_dir(path: str) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+def _validate_and_split_params(param_grid: Dict[str, Sequence[Any]], order: Sequence[str]):
+    continuous_keys, bounds, constant_map, categorical_map = [], [], {}, {}
+    missing = [k for k in order if k not in param_grid]
+    if missing:
+        raise ValueError(f"param_grid missing required keys: {missing}")
+    for k in order:
+        vals = param_grid[k]
+        if isinstance(vals, tuple) and len(vals) == 2 and all(isinstance(v, (int, float)) for v in vals):
+            lo, hi = vals
+            if lo < hi:
+                continuous_keys.append(k)
+                bounds.append((lo, hi))
+            else:
+                constant_map[k] = lo
+        elif isinstance(vals, (list, tuple)) and len(vals) >= 2 and all(isinstance(v, (int, float)) for v in vals):
+            lo, hi = min(vals), max(vals)
+            if lo < hi:
+                continuous_keys.append(k)
+                bounds.append((lo, hi))
+            else:
+                constant_map[k] = lo
+        else:
+            if isinstance(vals, (list, tuple)):
+                categorical_map[k] = list(vals)
+            else:
+                constant_map[k] = vals
+    return continuous_keys, bounds, constant_map, categorical_map
+
+def lhs_samples(param_grid: Dict[str, Sequence[Any]], order: Sequence[str], n_samples: int) -> List[Tuple[Any, ...]]:
+    continuous_keys, bounds, constant_map, categorical = _validate_and_split_params(param_grid, order)
+    if continuous_keys:
+        sampler = qmc.LatinHypercube(d=len(continuous_keys))
+        r = sampler.random(n=n_samples)
+        lo_bounds = [b[0] for b in bounds]
+        hi_bounds = [b[1] for b in bounds]
+        scaled = qmc.scale(r, lo_bounds, hi_bounds)
     else:
-        lhs_scaled = np.zeros((n_samples, 0))
-
+        scaled = np.zeros((n_samples, 0))
     samples = []
     for i in range(n_samples):
-        s = {}
-        for j, key in enumerate(continuous_params.keys()):
-            s[key] = lhs_scaled[i, j]
-        for key, choices in categorical_params.items():
-            s[key] = np.random.choice(choices)
-        samples.append(s)
+        rec = {}
+        for j, key in enumerate(continuous_keys):
+            rec[key] = float(scaled[i, j])
+        for key, val in constant_map.items():
+            rec[key] = val
+        for key, opts in categorical.items():
+            rec[key] = opts[0] if len(opts) == 1 else np.random.choice(opts)
+        samples.append(tuple(rec[name] for name in order))
     return samples
 
-# --- Worker Function (Replace with Solver) ---
-def _worker(params):
+def _worker(args: Tuple[Any, ...]) -> Dict[str, Any]:
+    airfoil, wingspan, aspect_ratio, taper_ratio, fp, va, aoa = args
+    base = {
+        "airfoil": airfoil, "wingspan": wingspan, "aspect_ratio": aspect_ratio, "taper_ratio": taper_ratio,
+        "flapping_period": fp, "air_speed": va, "angle_of_attack": aoa,
+        "lift": None, "induced_drag": None
+    }
     try:
-        # Replace this section with the real solver call
-        # Example dummy computation
-        drag = params.get("AoA", 0) * 0.1
-        lift = params.get("flapping_period", 1) * 2.0
-        velocity = params.get("velocity", 0)
-        return {
-            "status": "ok",
-            **params,
-            "drag": drag,
-            "lift": lift,
-            "efficiency": lift / (drag + 1e-6),
-            "momentum": velocity * lift
-        }
+        lift, drag = simulation(
+            mw_airfoil=airfoil, fp=fp, va=va, aoa=aoa,
+            mw_wingspan=wingspan, aspect_ratio=aspect_ratio, taper_ratio=taper_ratio
+        )
+        base["lift"] = float(lift) if lift is not None else None
+        base["induced_drag"] = float(drag) if drag is not None else None
+        base["status"] = "ok"
+        base["error"] = ""
     except Exception as e:
-        return {"status": "error", **params, "error": str(e)}
+        base["status"] = "error"
+        base["error"] = f"{type(e).__name__}: {e}"
+    return base
 
-# --- Main Sweep Runner ---
-def run_sweep(cfg: SweepConfig):
-    combos = lhs_samples(cfg.param_grid, cfg.n_samples)
-    results, ok_count, err_count = [], 0, 0
-
-    with ProcessPoolExecutor(max_workers=cfg.max_workers) as ex:
-        for idx, rec in enumerate(ex.map(_worker, combos), 1):
-            results.append(rec)
-
-            if rec["status"] == "ok":
-                ok_count += 1
-            else:
-                err_count += 1
-
-            if len(results) >= cfg.chunk_size:
-                _flush_results(cfg.out_file, results)
-                results = []
-
-            if idx % 5 == 0:
-                logging.info("Progress: %d/%d runs complete", idx, cfg.n_samples)
-
-    if results:
-        _flush_results(cfg.out_file, results)
-
-    logging.info("Sweep finished: %d ok, %d errors", ok_count, err_count)
-
-# --- Write to CSV ---
-def _flush_results(out_file, records):
-    write_header = not os.path.exists(out_file)
-    with open(out_file, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=records[0].keys())
+def _write_frame(df_rows: List[Dict[str, Any]], path: str) -> None:
+    ensure_parent_dir(path)
+    if not df_rows:
+        return
+    write_header = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS, extrasaction="ignore")
         if write_header:
             writer.writeheader()
-        writer.writerows(records)
+        writer.writerows(df_rows)
 
-# --- Example Usage ---
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+# --- Main sweep ---
 
-    param_grid = {
-        "AoA": (10, 30),
+def run_sweep(cfg: SweepConfig) -> None:
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    os.environ.setdefault("MKL_NUM_THREADS", "1")
+    os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+    setup_logging(cfg.log_path)
+
+    samples = lhs_samples(cfg.param_grid, ARG_ORDER, cfg.n_samples)
+    total = len(samples)
+    logging.info("Prepared %d samples for sweep", total)
+
+    max_workers = cfg.max_workers or max(1, os.cpu_count())
+    in_flight_limit = max(1, max_workers * cfg.in_flight_factor)
+
+    # Remove old files
+    for path in (cfg.output_csv, cfg.error_csv):
+        if os.path.exists(path):
+            os.remove(path)
+
+    ok_count = err_count = 0
+    start_time = time.time()
+
+    with ProcessPoolExecutor(max_workers=max_workers) as ex:
+        futures = {}
+        idx_submit = 0
+        while idx_submit < total and len(futures) < in_flight_limit:
+            fut = ex.submit(_worker, samples[idx_submit])
+            futures[fut] = samples[idx_submit]
+            idx_submit += 1
+
+        for fut in as_completed(list(futures.keys())):
+            params = futures.pop(fut)
+            try:
+                rec = fut.result()
+            except Exception as e:
+                rec = dict(zip(ARG_ORDER, params))
+                rec.update({"lift": None, "induced_drag": None, "status": "error", "error": str(e)})
+
+            # Write immediately
+            if rec.get("status") == "ok":
+                ok_count += 1
+                _write_frame([rec], cfg.output_csv)
+            else:
+                err_count += 1
+                _write_frame([rec], cfg.error_csv)
+                logging.error("Task failed: %s", rec.get("error", "<no error>"))
+
+            # Submit next
+            if idx_submit < total:
+                fut = ex.submit(_worker, samples[idx_submit])
+                futures[fut] = samples[idx_submit]
+                idx_submit += 1
+
+            # Progress
+            logging.info("Progress: %d/%d (ok=%d, err=%d)", ok_count+err_count, total, ok_count, err_count)
+
+    logging.info("Sweep complete in %.1fs — ok=%d, errors=%d", time.time()-start_time, ok_count, err_count)
+
+# --- Entrypoint ---
+
+def default_param_grid() -> Dict[str, Sequence[Any]]:
+    return {
+        "airfoil": ["naca2412"],
         "flapping_period": (0.65, 0.85),
-        "velocity": (3, 5),
-        "airfoil": ["naca2412", "naca0012"]
+        "angle_of_attack": (10.0, 30.0),
+        "air_speed": (3.0, 5.0),
+        "wingspan": (0.4, 0.4),
+        "aspect_ratio": (1.25, 3.0),
+        "taper_ratio": (0.3, 0.4)
     }
 
-    cfg = SweepConfig(
-        param_grid=param_grid,
-        n_samples=20,
-        max_workers=4,
-        chunk_size=10
-    )
-
+def main() -> None:
+    cfg = SweepConfig(param_grid=default_param_grid(), n_samples=20, max_workers=5)
     run_sweep(cfg)
+
+if __name__ == "__main__":
+    main()
