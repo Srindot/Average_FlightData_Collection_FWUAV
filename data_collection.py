@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Safe parallel sweep with LHS sampling and immediate CSV write per process.
-Iterates over multiple airfoils.
+Safe parallel sweep with LHS sampling and immediate CSV write per process,
+for the selected airfoils only.
 """
 from __future__ import annotations
 
@@ -34,6 +34,8 @@ ARG_ORDER = [
     "airfoil", "wingspan", "aspect_ratio", "taper_ratio",
     "flapping_period", "air_speed", "angle_of_attack"
 ]
+
+VALID_AIRFOILS = ["naca8304", "goe225", "naca2412", "naca0012"]
 
 # --- Config Dataclass ---
 
@@ -119,6 +121,14 @@ def lhs_samples(param_grid: Dict[str, Sequence[Any]], order: Sequence[str], n_sa
 
 def _worker(args: Tuple[Any, ...]) -> Dict[str, Any]:
     airfoil, wingspan, aspect_ratio, taper_ratio, fp, va, aoa = args
+    if airfoil not in VALID_AIRFOILS:
+        return {
+            "airfoil": airfoil, "wingspan": wingspan, "aspect_ratio": aspect_ratio, "taper_ratio": taper_ratio,
+            "flapping_period": fp, "air_speed": va, "angle_of_attack": aoa,
+            "lift": None, "induced_drag": None,
+            "status": "error",
+            "error": "Airfoil not in database!"
+        }
     base = {
         "airfoil": airfoil, "wingspan": wingspan, "aspect_ratio": aspect_ratio, "taper_ratio": taper_ratio,
         "flapping_period": fp, "air_speed": va, "angle_of_attack": aoa,
@@ -212,9 +222,8 @@ def run_sweep(cfg: SweepConfig) -> None:
 # --- Entrypoint ---
 
 def default_param_grid() -> Dict[str, Sequence[Any]]:
-    # Now iterates over multiple airfoils
     return {
-        "airfoil": ["naca2412", "naca0012", "eppler123", "s1223"],
+        "airfoil": VALID_AIRFOILS,
         "flapping_period": (0.65, 0.85),
         "angle_of_attack": (10.0, 30.0),
         "air_speed": (3.0, 5.0),
