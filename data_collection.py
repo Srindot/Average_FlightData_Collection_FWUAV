@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Safe parallel sweep with LHS sampling and immediate CSV write per process,
-for the selected airfoils only.
+for the selected airfoils only, with lift filtering.
 """
 from __future__ import annotations
 
@@ -139,7 +139,16 @@ def _worker(args: Tuple[Any, ...]) -> Dict[str, Any]:
             mw_airfoil=airfoil, fp=fp, va=va, aoa=aoa,
             mw_wingspan=wingspan, aspect_ratio=aspect_ratio, taper_ratio=taper_ratio
         )
-        base["lift"] = float(lift) if lift is not None else None
+        if lift is None:
+            raise ValueError("Simulation returned None for lift")
+
+        # --- Lift filtering ---
+        if lift <= 40.0:  
+            base["status"] = "error"
+            base["error"] = f"Lift below threshold (lift={lift:.2f} N)"
+            return base
+
+        base["lift"] = float(lift)
         base["induced_drag"] = float(drag) if drag is not None else None
         base["status"] = "ok"
         base["error"] = ""
