@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Safe parallel sweep with LHS sampling and immediate CSV write per process.
+Iterates over multiple airfoils.
 """
 from __future__ import annotations
 
@@ -211,8 +212,9 @@ def run_sweep(cfg: SweepConfig) -> None:
 # --- Entrypoint ---
 
 def default_param_grid() -> Dict[str, Sequence[Any]]:
+    # Now iterates over multiple airfoils
     return {
-        "airfoil": ["naca2412"],
+        "airfoil": ["naca2412", "naca0012", "eppler123", "s1223"],
         "flapping_period": (0.65, 0.85),
         "angle_of_attack": (10.0, 30.0),
         "air_speed": (3.0, 5.0),
