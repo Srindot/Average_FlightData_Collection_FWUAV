@@ -16,7 +16,7 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.stats import qmc
 
-from avg_coeff_simulation import simulation  # Your simulation function
+from avg_coeff_simulation import simulation  
 
 # --- Constants ---
 
@@ -47,7 +47,6 @@ class SweepConfig:
     error_csv: str = DEFAULT_ERROR_CSV
     log_path: str = DEFAULT_LOG
     max_workers: Optional[int] = 2
-    in_flight_factor: int = 2
 
 # --- Utilities ---
 
@@ -55,7 +54,7 @@ def setup_logging(log_path: str) -> None:
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     logging.basicConfig(
         filename=log_path,
-        filemode="a",
+        filemode="a",   # ✅ append instead of overwrite
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s"
     )
@@ -139,10 +138,10 @@ def _worker(args: Tuple[Any, ...]) -> Dict[str, Any]:
         if lift is None:
             raise ValueError("Simulation returned None for lift")
 
-        # --- Lift filtering ---
-        if lift <= -40.0:  
-            base["status"] = "error"
-            base["error"] = f"Lift below threshold (lift={lift:.2f} N)"
+        # --- ✅ Lift filtering: skip if lift < -100 N ---
+        if lift < -100.0:
+            base["status"] = "skipped"
+            base["error"] = f"Extreme negative lift (lift={lift:.2f} N)"
             return base
 
         base["lift"] = float(lift)
@@ -174,12 +173,11 @@ def run_sweep(cfg: SweepConfig) -> None:
     os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
     setup_logging(cfg.log_path)
 
-    # --- Balanced airfoil sampling ---
     all_airfoils = cfg.param_grid.get("airfoil", [])
     if not all_airfoils:
         raise ValueError("No airfoils provided in param_grid")
 
-    # Copy grid without airfoils
+    # --- Generate samples for all airfoils ---
     sampling_grid = {k: v for k, v in cfg.param_grid.items() if k != "airfoil"}
     samples = []
     for airfoil in all_airfoils:
@@ -191,21 +189,15 @@ def run_sweep(cfg: SweepConfig) -> None:
     logging.info("Prepared %d samples for sweep (%d per airfoil)", total, cfg.n_samples)
 
     max_workers = cfg.max_workers or max(1, os.cpu_count())
-    in_flight_limit = max(1, max_workers * cfg.in_flight_factor)
-
-    ok_count = err_count = 0
+    ok_count = err_count = skip_count = 0
     start_time = time.time()
 
+    # --- ✅ Submit ALL tasks at once ---
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
-        futures = {}
-        idx_submit = 0
-        while idx_submit < total and len(futures) < in_flight_limit:
-            fut = ex.submit(_worker, samples[idx_submit])
-            futures[fut] = samples[idx_submit]
-            idx_submit += 1
+        futures = {ex.submit(_worker, s): s for s in samples}
 
         for fut in as_completed(futures):
-            params = futures.pop(fut)
+            params = futures[fut]
             try:
                 rec = fut.result()
             except Exception as e:
@@ -215,19 +207,19 @@ def run_sweep(cfg: SweepConfig) -> None:
             if rec.get("status") == "ok":
                 ok_count += 1
                 _write_frame([rec], cfg.output_csv)
+            elif rec.get("status") == "skipped":
+                skip_count += 1
+                logging.info("Skipped: %s", rec.get("error"))
             else:
                 err_count += 1
                 _write_frame([rec], cfg.error_csv)
                 logging.error("Task failed: %s", rec.get("error", "<no error>"))
 
-            if idx_submit < total:
-                fut = ex.submit(_worker, samples[idx_submit])
-                futures[fut] = samples[idx_submit]
-                idx_submit += 1
+            logging.info("Progress: %d/%d (ok=%d, skipped=%d, err=%d)", 
+                         ok_count+skip_count+err_count, total, ok_count, skip_count, err_count)
 
-            logging.info("Progress: %d/%d (ok=%d, err=%d)", ok_count+err_count, total, ok_count, err_count)
-
-    logging.info("Sweep complete in %.1fs — ok=%d, errors=%d", time.time()-start_time, ok_count, err_count)
+    logging.info("Sweep complete in %.1fs — ok=%d, skipped=%d, errors=%d", 
+                 time.time()-start_time, ok_count, skip_count, err_count)
 
 # --- Entrypoint ---
 
