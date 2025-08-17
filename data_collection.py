@@ -16,7 +16,7 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.stats import qmc
 
-from avg_coeff_simulation import simulation  
+from simulation import simulation  
 
 # --- Constants ---
 
