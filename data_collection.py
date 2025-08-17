@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Safe parallel sweep with LHS sampling and immediate CSV write per process,
-for the selected airfoils only, with lift filtering.
+balanced across airfoils, with lift filtering.
 """
 from __future__ import annotations
 
@@ -71,9 +71,6 @@ def ensure_parent_dir(path: str) -> None:
 
 def _validate_and_split_params(param_grid: Dict[str, Sequence[Any]], order: Sequence[str]):
     continuous_keys, bounds, constant_map, categorical_map = [], [], {}, {}
-    missing = [k for k in order if k not in param_grid]
-    if missing:
-        raise ValueError(f"param_grid missing required keys: {missing}")
     for k in order:
         vals = param_grid[k]
         if isinstance(vals, tuple) and len(vals) == 2 and all(isinstance(v, (int, float)) for v in vals):
@@ -143,7 +140,7 @@ def _worker(args: Tuple[Any, ...]) -> Dict[str, Any]:
             raise ValueError("Simulation returned None for lift")
 
         # --- Lift filtering ---
-        if lift <= 40.0:  
+        if lift <= -40.0:  
             base["status"] = "error"
             base["error"] = f"Lift below threshold (lift={lift:.2f} N)"
             return base
@@ -177,17 +174,24 @@ def run_sweep(cfg: SweepConfig) -> None:
     os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
     setup_logging(cfg.log_path)
 
-    samples = lhs_samples(cfg.param_grid, ARG_ORDER, cfg.n_samples)
+    # --- Balanced airfoil sampling ---
+    all_airfoils = cfg.param_grid.get("airfoil", [])
+    if not all_airfoils:
+        raise ValueError("No airfoils provided in param_grid")
+
+    # Copy grid without airfoils
+    sampling_grid = {k: v for k, v in cfg.param_grid.items() if k != "airfoil"}
+    samples = []
+    for airfoil in all_airfoils:
+        grid_for_airfoil = dict(sampling_grid)
+        grid_for_airfoil["airfoil"] = [airfoil]
+        samples.extend(lhs_samples(grid_for_airfoil, ARG_ORDER, cfg.n_samples))
+
     total = len(samples)
-    logging.info("Prepared %d samples for sweep", total)
+    logging.info("Prepared %d samples for sweep (%d per airfoil)", total, cfg.n_samples)
 
     max_workers = cfg.max_workers or max(1, os.cpu_count())
     in_flight_limit = max(1, max_workers * cfg.in_flight_factor)
-
-    # Remove old files
-    for path in (cfg.output_csv, cfg.error_csv):
-        if os.path.exists(path):
-            os.remove(path)
 
     ok_count = err_count = 0
     start_time = time.time()
@@ -200,7 +204,7 @@ def run_sweep(cfg: SweepConfig) -> None:
             futures[fut] = samples[idx_submit]
             idx_submit += 1
 
-        for fut in as_completed(list(futures.keys())):
+        for fut in as_completed(futures):
             params = futures.pop(fut)
             try:
                 rec = fut.result()
@@ -208,7 +212,6 @@ def run_sweep(cfg: SweepConfig) -> None:
                 rec = dict(zip(ARG_ORDER, params))
                 rec.update({"lift": None, "induced_drag": None, "status": "error", "error": str(e)})
 
-            # Write immediately
             if rec.get("status") == "ok":
                 ok_count += 1
                 _write_frame([rec], cfg.output_csv)
@@ -217,13 +220,11 @@ def run_sweep(cfg: SweepConfig) -> None:
                 _write_frame([rec], cfg.error_csv)
                 logging.error("Task failed: %s", rec.get("error", "<no error>"))
 
-            # Submit next
             if idx_submit < total:
                 fut = ex.submit(_worker, samples[idx_submit])
                 futures[fut] = samples[idx_submit]
                 idx_submit += 1
 
-            # Progress
             logging.info("Progress: %d/%d (ok=%d, err=%d)", ok_count+err_count, total, ok_count, err_count)
 
     logging.info("Sweep complete in %.1fs — ok=%d, errors=%d", time.time()-start_time, ok_count, err_count)
@@ -233,12 +234,12 @@ def run_sweep(cfg: SweepConfig) -> None:
 def default_param_grid() -> Dict[str, Sequence[Any]]:
     return {
         "airfoil": VALID_AIRFOILS,
-        "flapping_period": (0.65, 0.85),
-        "angle_of_attack": (10.0, 30.0),
+        "flapping_period": (0.4, 1.2),
+        "angle_of_attack": (2.0, 30.0),
         "air_speed": (3.0, 5.0),
-        "wingspan": (0.4, 0.4),
-        "aspect_ratio": (1.25, 3.0),
-        "taper_ratio": (0.3, 0.4)
+        "wingspan": (0.4, 1.2),
+        "aspect_ratio": (1.25, 4.0),
+        "taper_ratio": (0.2, 0.6)
     }
 
 def main() -> None:
