@@ -9,6 +9,7 @@ import os
 import csv
 import logging
 import time
+import multiprocessing as mp
 from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence, Tuple, Optional
 
@@ -16,7 +17,7 @@ import numpy as np
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.stats import qmc
 
-from simulation import simulation  
+from simulation import simulation  # your function
 
 # --- Constants ---
 
@@ -54,14 +55,18 @@ def setup_logging(log_path: str) -> None:
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     logging.basicConfig(
         filename=log_path,
-        filemode="a",   # ✅ append instead of overwrite
+        filemode="a",   # append
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s"
     )
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
     console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    logging.getLogger().addHandler(console)
+    root = logging.getLogger()
+    if not any(isinstance(h, logging.StreamHandler) for h in root.handlers):
+        root.addHandler(console)
+    else:
+        root.addHandler(console)
 
 def ensure_parent_dir(path: str) -> None:
     parent = os.path.dirname(path)
@@ -115,6 +120,8 @@ def lhs_samples(param_grid: Dict[str, Sequence[Any]], order: Sequence[str], n_sa
         samples.append(tuple(rec[name] for name in order))
     return samples
 
+# --- Worker side ---
+
 def _worker(args: Tuple[Any, ...]) -> Dict[str, Any]:
     airfoil, wingspan, aspect_ratio, taper_ratio, fp, va, aoa = args
     if airfoil not in VALID_AIRFOILS:
@@ -138,7 +145,6 @@ def _worker(args: Tuple[Any, ...]) -> Dict[str, Any]:
         if lift is None:
             raise ValueError("Simulation returned None for lift")
 
-        # --- ✅ Lift filtering: skip if lift < -100 N ---
         if lift < -100.0:
             base["status"] = "skipped"
             base["error"] = f"Extreme negative lift (lift={lift:.2f} N)"
@@ -177,9 +183,8 @@ def run_sweep(cfg: SweepConfig) -> None:
     if not all_airfoils:
         raise ValueError("No airfoils provided in param_grid")
 
-    # --- Generate samples for all airfoils ---
     sampling_grid = {k: v for k, v in cfg.param_grid.items() if k != "airfoil"}
-    samples = []
+    samples: List[Tuple[Any, ...]] = []
     for airfoil in all_airfoils:
         grid_for_airfoil = dict(sampling_grid)
         grid_for_airfoil["airfoil"] = [airfoil]
@@ -192,10 +197,8 @@ def run_sweep(cfg: SweepConfig) -> None:
     ok_count = err_count = skip_count = 0
     start_time = time.time()
 
-    # --- ✅ Submit ALL tasks at once ---
     with ProcessPoolExecutor(max_workers=max_workers) as ex:
         futures = {ex.submit(_worker, s): s for s in samples}
-
         for fut in as_completed(futures):
             params = futures[fut]
             try:
@@ -215,11 +218,15 @@ def run_sweep(cfg: SweepConfig) -> None:
                 _write_frame([rec], cfg.error_csv)
                 logging.error("Task failed: %s", rec.get("error", "<no error>"))
 
-            logging.info("Progress: %d/%d (ok=%d, skipped=%d, err=%d)", 
-                         ok_count+skip_count+err_count, total, ok_count, skip_count, err_count)
+            logging.info(
+                "Progress: %d/%d (ok=%d, skipped=%d, err=%d)",
+                ok_count + skip_count + err_count, total, ok_count, skip_count, err_count
+            )
 
-    logging.info("Sweep complete in %.1fs — ok=%d, skipped=%d, errors=%d", 
-                 time.time()-start_time, ok_count, skip_count, err_count)
+    logging.info(
+        "Sweep complete in %.1fs — ok=%d, skipped=%d, errors=%d",
+        time.time() - start_time, ok_count, skip_count, err_count
+    )
 
 # --- Entrypoint ---
 
@@ -235,6 +242,11 @@ def default_param_grid() -> Dict[str, Sequence[Any]]:
     }
 
 def main() -> None:
+    try:
+        mp.set_start_method("spawn")
+    except RuntimeError:
+        pass
+
     cfg = SweepConfig(param_grid=default_param_grid(), n_samples=20, max_workers=5)
     run_sweep(cfg)
 
