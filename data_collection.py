@@ -21,8 +21,8 @@ from simulation import simulation  # your function
 
 # --- Constants ---
 
-DEFAULT_OUTPUT = "Data/AverageFlightData10.csv"
-DEFAULT_ERROR_CSV = "Data/AverageFlightData10_errors.csv"
+DEFAULT_OUTPUT = "Data/AverageFlightData11.csv"
+DEFAULT_ERROR_CSV = "Data/AverageFlightData11_errors.csv"
 DEFAULT_LOG = "logs/mark4_sweep.log"
 
 CSV_COLUMNS = [
@@ -247,7 +247,7 @@ def main() -> None:
     except RuntimeError:
         pass
 
-    cfg = SweepConfig(param_grid=default_param_grid(), n_samples=20, max_workers=5)
+    cfg = SweepConfig(param_grid=default_param_grid(), n_samples=2000, max_workers=4)
     run_sweep(cfg)
 
 if __name__ == "__main__":
