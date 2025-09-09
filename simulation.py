@@ -107,6 +107,20 @@ def simulation(
         prescribed_wake=True,  # less accurate but faster
     )
 
+    ps.output.animate(  # Set the unsteady solver to the one we just ran.
+    unsteady_solver=solver,
+    # Tell the animate function to color the aircraft's wing panels with the local
+    # lift coefficient. The valid arguments for this parameter are None, "induced drag",
+    # "side force", or "lift".
+    scalar_type="lift",
+    # Tell the animate function to show the wake vortices. This value defaults to
+    # False.
+    show_wake_vortices=True,
+    # Tell the animate function to not save the animation as file. This way,
+    # the animation will still be displayed but not saved. This value defaults to
+    # False.
+    save=False,
+    )
     # --- Post-Processing ---
     lifts_list, drags_list = get_average_results(solver)
 
